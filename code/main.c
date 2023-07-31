@@ -5,80 +5,57 @@
 #include "hardware/rtc.h"
 #include "hardware.h"
 
-//#define DBG_PRINTS
-#define BLINK_BLED 0
-#define BLINK_GLED 0
-static char event_str[128];
-static const char *gpio_irq_str[] = {
-	"LEVEL_LOW",  // 0x1
-	"LEVEL_HIGH", // 0x2
-	"EDGE_FALL",  // 0x4
-	"EDGE_RISE"	  // 0x8
-};
+typedef enum
+{
+	NORMAL,
+	SET_CLK
+} sm_state_t;
 
 volatile uint8_t TIME_DATA[4] = {0,0,0,0};
+volatile bool BLINK_DATA[4] = {0,0,0,0};
+volatile sm_state_t SM_STATE = NORMAL;
 
-void gpio_event_string(char *buf, uint32_t events)
+
+int64_t alarm_callback(alarm_id_t id, void *user_data) 
 {
-	for (uint i = 0; i < 4; i++)
+	bool gpio_val;
+    printf("Timer %d fired!\n", (int) id);
+    gpio_set_irq_enabled(SW2, GPIO_IRQ_EDGE_FALL, true);
+    // Can return a value here in us to fire in the future
+	printf("GPIO %d irq enabled\n", SW2);
+	gpio_val = gpio_get(SW2); 	
+	
+	if (gpio_val == false)
 	{
-		uint mask = (1 << i);
-		if (events & mask)
-		{
-			// Copy this event string into the user string
-			const char *event_str = gpio_irq_str[i];
-			while (*event_str != '\0')
-			{
-				*buf++ = *event_str++;
-			}
-			events &= ~mask;
-
-			// If more events add ", "
-			if (events)
-			{
-				*buf++ = ',';
-				*buf++ = ' ';
-			}
-		}
+		SM_STATE = SET_CLK;
 	}
-	*buf++ = '\0';
+    return 0;
 }
 
-void gpio1_callback(uint gpio, uint32_t events)
+void gpio_callback(uint gpio, uint32_t events)
 {
-	uint64_t tdiff;
-	static absolute_time_t from_time;
-	static absolute_time_t to_time;
-	static int first_time = 1;
+//	uint64_t tdiff;
+//	static absolute_time_t from_time;
+//	static absolute_time_t to_time;
+//	static int first_time = 1;
 	// Put the GPIO event(s) that just happened into event_str
 	// so we can print it
+	alarm_id_t alarm_id;
 	gpio_acknowledge_irq(gpio, events);
-	gpio_event_string(event_str, events);
 
-	if (first_time)
+	gpio_set_irq_enabled(SW2, GPIO_IRQ_EDGE_FALL, false);
+
+
+    // Call alarm_callback in 2 seconds
+    alarm_id = add_alarm_in_ms(2000, alarm_callback, NULL, false);
+	if (alarm_id <= 0)
 	{
-		from_time = get_absolute_time();
-		to_time = get_absolute_time();
-		first_time = 0;
+		// failed to create alarm
+		gpio_set_irq_enabled(SW2, GPIO_IRQ_EDGE_FALL, true);
 	}
-
-	to_time = get_absolute_time();
-	tdiff = absolute_time_diff_us(from_time, to_time);
-	from_time = to_time;
-
-	printf("GPIO1 %d %lld %s\n", gpio, tdiff, event_str);
+	printf("GPIO %d irq disabled\n", gpio);
 }
 
-void gpio2_callback(uint gpio, uint32_t events)
-{
-	// Put the GPIO event(s) that just happened into event_str
-	// so we can print it
-	static uint32_t num = 0;
-	gpio_acknowledge_irq(gpio, events);
-	gpio_event_string(event_str, events);
-	printf("GPIO2 %d %u %s\n", gpio, num, event_str);
-	num++;
-}
 
 void pin_init(void)
 {
@@ -91,22 +68,24 @@ void pin_init(void)
 	gpio_set_dir(CLCK, GPIO_OUT);
 	gpio_init(LATCH);
 	gpio_set_dir(LATCH, GPIO_OUT);
-#if 0
+
 	gpio_init(SW1);
 	gpio_set_dir(SW1, GPIO_IN);
 	gpio_init(SW2);
 	gpio_set_dir(SW2, GPIO_IN);
-#endif
-	// gpio_set_irq_enabled_with_callback(SW1, GPIO_IRQ_EDGE_FALL, true, &gpio1_callback);
-	// gpio_set_irq_enabled_with_callback(SW2, GPIO_IRQ_EDGE_FALL, true, &gpio2_callback);
+
+	// can register only one callback
+	gpio_set_irq_enabled_with_callback(SW2, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+	
 
 	gpio_set_slew_rate(SW1, GPIO_SLEW_RATE_SLOW);
 	gpio_set_slew_rate(SW2, GPIO_SLEW_RATE_SLOW);
+#if 0
 	gpio_disable_pulls(SW1);
 	gpio_disable_pulls(SW2);
 	gpio_set_input_hysteresis_enabled(SW1, true);
 	gpio_set_input_hysteresis_enabled(SW2, true);
-
+#endif
 	gpio_put(CLCK, false);
 	gpio_put(SDATA, false);
 	gpio_put(LATCH, false);
@@ -117,27 +96,31 @@ void brk_fxn(void)
 	// printf(".");
 }
 
-
-bool repeating_timer_callback(struct repeating_timer *t) 
+void set_time_from_rtc(void)
 {
 	datetime_t rtc_time;
 	uint8_t hr_ld,hr_hd, min_hd,min_ld;
 	bool ret;
 
 	ret = rtc_get_datetime(&rtc_time);
-
 	if (ret)
 	{
-	hr_hd = (uint8_t)(rtc_time.hour/10);
-	hr_ld = (uint8_t)(rtc_time.hour%10);
-	min_hd = (uint8_t)(rtc_time.min/10);
-	min_ld = (uint8_t)(rtc_time.min%10);
-//TIME_DATA[HR_HD]
-	TIME_DATA[HR_HD_IDX] = hr_hd;
-	TIME_DATA[HR_LD_IDX] = hr_ld;
-	TIME_DATA[MIN_HD_IDX] = min_hd;
-	TIME_DATA[MIN_LD_IDX] = min_ld;
+		hr_hd = (uint8_t)(rtc_time.hour/10);
+		hr_ld = (uint8_t)(rtc_time.hour%10);
+		min_hd = (uint8_t)(rtc_time.min/10);
+		min_ld = (uint8_t)(rtc_time.min%10);
+	//TIME_DATA[HR_HD]
+		TIME_DATA[HR_HD_IDX] = hr_hd;
+		TIME_DATA[HR_LD_IDX] = hr_ld;
+		TIME_DATA[MIN_HD_IDX] = min_hd;
+		TIME_DATA[MIN_LD_IDX] = min_ld;
 	}
+	return;
+}
+
+bool repeating_timer_callback(struct repeating_timer *t) 
+{
+	set_time_from_rtc();
     return true;
 }
 
@@ -146,17 +129,18 @@ void display_time(void);
 int main()
 {
 	struct repeating_timer timer;
-        char datetime_buf[256];
+#if 0	
+    char datetime_buf[256];
     char *datetime_str = &datetime_buf[0];
-
+#endif
     // Start on Friday 5th of June 2020 15:45:00
     datetime_t t = {
             .year  = 2023,
             .month = 10,
-            .day   = 29,
+            .day   = 31,
             .dotw  = 1, // 0 is Sunday, so 5 is Friday
-            .hour  = 20,
-            .min   = 55,
+            .hour  = 12,
+            .min   = 00,
             .sec   = 00
     };
 
@@ -167,24 +151,102 @@ int main()
 	multicore_reset_core1();
     rtc_init();
 	sleep_us(100);
-
-#if 1
 	rtc_set_datetime(&t);
-#endif
+	sleep_us(1000);	
+	set_time_from_rtc();
 
-add_repeating_timer_ms(60000, repeating_timer_callback, NULL, &timer); //fire every minute
+	add_repeating_timer_ms(60000, repeating_timer_callback, NULL, &timer); //fire every minute
 	    multicore_launch_core1(display_time);
 	// Loop forever
 	while (true)
 	{
+#if 0
 		bool r;
 		r = rtc_running();
 		printf("is rtc running: %d\n", r);
 		rtc_get_datetime(&t);
         datetime_to_str(datetime_str, sizeof(datetime_buf), &t);
-        printf("\r%s  %d    ", datetime_str, r);
-	
+    //    printf("\r%s  %d    ", datetime_str, r);
+#endif
+
+	if (SM_STATE == NORMAL)
+	{	
 		sleep_ms(1000);
-		tight_loop_contents();
+	}
+	else if (SM_STATE == SET_CLK)
+	{
+		bool gv1, gv2;
+		static uint8_t local_idx = 0;
+		static uint16_t local_tick = 0;
+		uint8_t lcl_hr, lcl_min;
+
+		BLINK_DATA[local_idx] = true;
+
+   		gv1 = gpio_get(SW1);
+		sleep_ms(125);
+		gv2 = gpio_get(SW1);
+
+		if ((false == gv1) && (false == gv2))
+		{
+			uint8_t max_digit_val; // max values of individual digits, hr digit can be 0,1,2 only min digit can be 0...5
+			local_tick = 0;
+
+			
+
+			if (local_idx == 0)
+				max_digit_val = 3;
+			else if (local_idx == 2)
+				max_digit_val = 6;
+			else
+				max_digit_val = 10;
+
+			TIME_DATA[local_idx] = (TIME_DATA[local_idx] + 1)%max_digit_val;
+			
+			lcl_hr = TIME_DATA[HR_HD_IDX]*10 + TIME_DATA[HR_LD_IDX];
+			lcl_min = TIME_DATA[MIN_HD_IDX]*10 + TIME_DATA[MIN_LD_IDX];
+
+			lcl_hr %= 24;
+			lcl_min %= 60;
+
+			printf("set %d:%d\n",lcl_hr,lcl_min);
+			TIME_DATA[HR_HD_IDX] = (uint8_t)(lcl_hr/10);
+			TIME_DATA[HR_LD_IDX] = (uint8_t)(lcl_hr%10);
+			TIME_DATA[MIN_HD_IDX] = (uint8_t)(lcl_min/10);
+			TIME_DATA[MIN_LD_IDX] = (uint8_t)(lcl_min%10);
+		
+		}
+		if (local_tick > 15)
+		{
+				local_tick = 0;
+
+				BLINK_DATA[local_idx] = false;
+				local_idx++;
+				printf("next digit\n");
+				if (local_idx > 3)
+				{
+					bool ret;
+					datetime_t t;
+					local_idx = 0;
+					SM_STATE = NORMAL;
+
+					lcl_hr = TIME_DATA[HR_HD_IDX]*10 + TIME_DATA[HR_LD_IDX];
+					lcl_min = TIME_DATA[MIN_HD_IDX]*10 + TIME_DATA[MIN_LD_IDX];
+
+					ret = rtc_get_datetime(&t);
+					t.hour = lcl_hr;
+					t.min = lcl_min;
+					ret = rtc_set_datetime(&t);
+					if (true == ret)
+						printf("rtc set\n");
+					else
+						printf("failed to set rtc\n");
+
+					BLINK_DATA[local_idx] = false;	
+				}
+		}
+		local_tick++;
+		sleep_ms(100);
+	}
+	//	tight_loop_contents();
 	}
 }

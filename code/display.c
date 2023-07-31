@@ -6,11 +6,12 @@ uint8_t LED_SEL[] = {0x70, 0xb0, 0xd0, 0xe0};
 uint8_t DIG_VAL[] = {0x3, 0x9F, 0x25, 0x0D, 0x99, 0x49, 0x41, 0x1F, 0x1, 0x9};
 
 extern volatile uint8_t TIME_DATA[];
+extern volatile bool BLINK_DATA[];
 
 void clk_in_data(uint16_t data)
 {
 	uint8_t i;
-	const int delay_ms = 0;
+//	const int delay_ms = 0;
 
 	gpio_put(OE_N, true);
 #ifdef DBG_PRINTS
@@ -36,15 +37,15 @@ void clk_in_data(uint16_t data)
 #endif
 		}
 
-		sleep_ms(delay_ms);
+//		sleep_ms(delay_ms);
 
 		gpio_put(CLCK, true);
-		sleep_ms(delay_ms);
+//		sleep_ms(delay_ms);
 		gpio_put(CLCK, false);
 		//		gpio_put(SDATA, false);
 	}
 	gpio_put(LATCH, true);
-	sleep_ms(delay_ms);
+//	sleep_ms(delay_ms);
 	gpio_put(LATCH, false);
 
 	gpio_put(OE_N, false);
@@ -64,15 +65,34 @@ void display_time(void)
 		for (int j = 0; j < 4; j++)
 		{
 			int i = 0;
+			uint8_t sleep_time;
+			static uint8_t toggle = 0;
+
 			i = TIME_DATA[j];
 			data_u3 = DIG_VAL[i];
 			data_u6 = LED_SEL[j]; // 0xef; //f0
 			data = data_u3 << 8 | data_u6;
 			clk_in_data(data);
+			if (BLINK_DATA[j] == true)
+			{
 
+				if (toggle )
+				{
+					sleep_time = 0;
+					toggle = 0;
+				}
+				else
+				{
+					sleep_time = 5;
+					toggle = 1;
+				}
+
+			}
+			else
+				sleep_time = 5;
 //5 ms is the max to sleep otherwise the digits will flicker --> gives max intensity
 //.01 ms  --?> barely visible
-			sleep_ms(5);
+			sleep_ms(sleep_time);
 		}
 	}
 }

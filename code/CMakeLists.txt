@@ -22,6 +22,7 @@ add_compile_options(-Wall
 # Tell CMake where to find the executable source file
 add_executable(${PROJECT_NAME} 
     main.c
+    display.c
 )
 
 # Create map/bin/hex/uf2 files
@@ -30,6 +31,8 @@ pico_add_extra_outputs(${PROJECT_NAME})
 # Link to pico_stdlib (gpio, time, etc. functions)
 target_link_libraries(${PROJECT_NAME} 
     pico_stdlib
+    pico_multicore
+    hardware_rtc
 )
 
 # Enable usb output, disable uart output

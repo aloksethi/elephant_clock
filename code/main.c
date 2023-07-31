@@ -1,13 +1,9 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-
-#define LATCH 7
-#define OE_N 3
-#define SW1 5
-#define CLCK 4
-
-#define SDATA 6
-#define SW2 2
+#include "pico/multicore.h"
+#include "pico/util/datetime.h"
+#include "hardware/rtc.h"
+#include "hardware.h"
 
 //#define DBG_PRINTS
 #define BLINK_BLED 0
@@ -19,54 +15,8 @@ static const char *gpio_irq_str[] = {
 	"EDGE_FALL",  // 0x4
 	"EDGE_RISE"	  // 0x8
 };
-uint8_t LED_SEL[] = {0x70, 0xb0, 0xd0, 0xe0};
-uint8_t DIG_VAL[] = {0x3, 0xF3, 0x25, 0x0D, 0x99, 0x49, 0x41, 0x1F, 0x1, 0x9};
-void clk_in_data(uint16_t data)
-{
-	uint8_t i;
-	const int delay_ms = 0;
 
-	gpio_put(OE_N, true);
-#ifdef DBG_PRINTS
-	printf("data is: %x\r\n", data);
-#endif
-	for (i = 0; i < sizeof(data) * 8; i++)
-	{
-		uint8_t tmp;
-
-		tmp = (data & (0x1 << i)) >> i;
-		if (tmp)
-		{
-			gpio_put(SDATA, true);
-#ifdef DBG_PRINTS
-			printf(" 1 ");
-#endif
-		}
-		else
-		{
-			gpio_put(SDATA, false);
-#ifdef DBG_PRINTS
-			printf(" 0 ");
-#endif
-		}
-
-		sleep_ms(delay_ms);
-
-		gpio_put(CLCK, true);
-		sleep_ms(delay_ms);
-		gpio_put(CLCK, false);
-		//		gpio_put(SDATA, false);
-	}
-	gpio_put(LATCH, true);
-	sleep_ms(delay_ms);
-	gpio_put(LATCH, false);
-
-	gpio_put(OE_N, false);
-#ifdef DBG_PRINTS
-	printf("\n");
-#endif
-	return;
-}
+volatile uint8_t TIME_DATA[4] = {0,0,0,0};
 
 void gpio_event_string(char *buf, uint32_t events)
 {
@@ -167,112 +117,74 @@ void brk_fxn(void)
 	// printf(".");
 }
 
-volatile uint8_t dig_val=0;
 
+bool repeating_timer_callback(struct repeating_timer *t) 
+{
+	datetime_t rtc_time;
+	uint8_t hr_ld,hr_hd, min_hd,min_ld;
+	bool ret;
 
-bool repeating_timer_callback(struct repeating_timer *t) {
-    printf("Repeat at %lld\n", time_us_64());
-dig_val +=1;
-dig_val = dig_val % 10;
+	ret = rtc_get_datetime(&rtc_time);
+
+	if (ret)
+	{
+	hr_hd = (uint8_t)(rtc_time.hour/10);
+	hr_ld = (uint8_t)(rtc_time.hour%10);
+	min_hd = (uint8_t)(rtc_time.min/10);
+	min_ld = (uint8_t)(rtc_time.min%10);
+//TIME_DATA[HR_HD]
+	TIME_DATA[HR_HD_IDX] = hr_hd;
+	TIME_DATA[HR_LD_IDX] = hr_ld;
+	TIME_DATA[MIN_HD_IDX] = min_hd;
+	TIME_DATA[MIN_LD_IDX] = min_ld;
+	}
     return true;
 }
 
+void display_time(void);
 
 int main()
 {
+	struct repeating_timer timer;
+        char datetime_buf[256];
+    char *datetime_str = &datetime_buf[0];
 
-	const uint led_pin = 25;
-	uint8_t data_u3 = 0x0;
-	uint8_t data_u6;
-	int i;
-	uint16_t data;
-	uint8_t data_in = 0;
-	// Initialize LED pin
-	gpio_init(led_pin);
-	gpio_set_dir(led_pin, GPIO_OUT);
+    // Start on Friday 5th of June 2020 15:45:00
+    datetime_t t = {
+            .year  = 2023,
+            .month = 10,
+            .day   = 29,
+            .dotw  = 1, // 0 is Sunday, so 5 is Friday
+            .hour  = 20,
+            .min   = 55,
+            .sec   = 00
+    };
+
+
 	pin_init();
 	// Initialize chosen serial port
 	stdio_init_all();
+	multicore_reset_core1();
+    rtc_init();
+	sleep_us(100);
 
-	clk_in_data(0x0);
+#if 1
+	rtc_set_datetime(&t);
+#endif
 
+add_repeating_timer_ms(60000, repeating_timer_callback, NULL, &timer); //fire every minute
+	    multicore_launch_core1(display_time);
 	// Loop forever
 	while (true)
 	{
-#if BLINK_BLED
-
-		// Blink LED
-		gpio_put(led_pin, true);
-		sleep_ms(500);
-		gpio_put(led_pin, false);
-		sleep_ms(500);
-#endif
-#if 0
-		data_u3 = 0x0;
-		data_u6 = 0x00;
-		data = data_u3<<8 | data_u6;
-		clk_in_data(data);
-		sleep_ms(500);
-#endif
-#if BLINK_GLED
-		data_u3 = 0xff;
-		data_u6 = 0xf0;
-		data = data_u3 << 8 | data_u6;
-		clk_in_data(data);
-		sleep_ms(500);
-
-		data_u3 = 0xff;
-		data_u6 = 0xf1;
-		data = data_u3 << 8 | data_u6;
-		clk_in_data(data);
-		sleep_ms(500);
-#endif
-
-#if 0
-		data_u3 = 0x0;
-		data_u6 = 0xf0;
-		data = data_u3<<8 | data_u6;
-		if (data_in == 0){
-			clk_in_data(data);
-		}
-		data_in = 1;
-		sleep_ms(500);
-#endif
-#if 0 // old testing loop
-	for (int j=0;j<4;j++)
-	{
-		//uint8_t tmp = 0;
-		//tmp = ~(1<<(j+4));
-		//tmp = 0xff;//tmp | 0xf0;
-		for (int i=0;i<10;i++)
-		{
-			
-			//data_u3 = (~(1<<i)) & 0xff;
-			data_u3= DIG_VAL[i];
-			data_u6 = LED_SEL[j];//0xef; //f0
-			data = data_u3<<8 | data_u6;
-			clk_in_data(data);
-			brk_fxn();
-			sleep_ms(500);
-		}
-	}
-#endif
-	struct repeating_timer timer;
-    add_repeating_timer_ms(1000, repeating_timer_callback, NULL, &timer);
-		//for (int i = 0; i < 10; i++)
-		while(1)
-		{ 
-			for (int j = 0; j < 4; j++)
-			{
-				int i = 0;
-				i = (dig_val + j)%10;
-				data_u3 = DIG_VAL[i];
-				data_u6 = LED_SEL[j]; // 0xef; //f0
-				data = data_u3 << 8 | data_u6;
-				clk_in_data(data);
-				
-				sleep_ms(0.5);
-			}
-		}
+		bool r;
+		r = rtc_running();
+		printf("is rtc running: %d\n", r);
+		rtc_get_datetime(&t);
+        datetime_to_str(datetime_str, sizeof(datetime_buf), &t);
+        printf("\r%s  %d    ", datetime_str, r);
+	
+		sleep_ms(1000);
+		tight_loop_contents();
 	}
 }
